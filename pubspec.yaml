@@ -61,6 +61,11 @@ flutter_launcher_icons:
     generate: true
   linux:
     generate: true
+  web:
+    generate: true
+    image_path: "assets/icon/rowmaster_icon.png"
+    background_color: "#1A1D24"
+    theme_color: "#1A1D24"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
