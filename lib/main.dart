@@ -201,7 +201,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     if (_uniqueValueCache.containsKey(column)) {
       return _uniqueValueCache[column]!;
     }
-    final colIndex = _headers.indexOf(column);
+    final colIndex = _headers.indexWhere((h) => h.toString() == column);
     if (colIndex == -1) return [];
     final values = _dataRows
         .map((row) => row[colIndex].toString())
@@ -421,7 +421,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
 
     for (final filter in _filters) {
       if (filter.value.isEmpty) continue;
-      final colIndex = _headers.indexOf(filter.column);
+      final colIndex = _headers.indexWhere((h) => h.toString() == filter.column);
       if (colIndex == -1) continue;
 
       rows = rows.where((row) {
@@ -454,7 +454,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
 
   List<MapEntry<String, int>> get _groupedData {
     if (_groupByColumn == null) return [];
-    final colIndex = _headers.indexOf(_groupByColumn);
+    final colIndex = _headers.indexWhere((h) => h.toString() == _groupByColumn);
     if (colIndex == -1) return [];
 
     final counts = <String, int>{};
