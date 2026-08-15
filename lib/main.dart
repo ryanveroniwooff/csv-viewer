@@ -4,7 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
 import 'package:excel/excel.dart' as xlsx;
 import 'package:archive/archive.dart';
-import 'dart:io';
+import 'file_bytes_reader.dart';
 import 'dart:convert';
 
 void main() {
@@ -273,8 +273,8 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     return Uint8List.fromList(encoded);
   }
 
-  Future<List<List<dynamic>>> _parseXlsx(String path) async {
-    final rawBytes = await File(path).readAsBytes();
+  Future<List<List<dynamic>>> _parseXlsx(PlatformFile file) async {
+    final rawBytes = await readFileBytes(file);
 
     Uint8List bytes;
     try {
@@ -295,12 +295,12 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
         .toList();
   }
 
-  Future<List<List<dynamic>>> _parseFile(String path, String name) async {
-    if (name.toLowerCase().endsWith('.xlsx')) {
-      return _parseXlsx(path);
+  Future<List<List<dynamic>>> _parseFile(PlatformFile file) async {
+    if (file.name.toLowerCase().endsWith('.xlsx')) {
+      return _parseXlsx(file);
     }
-    final content = await File(path).readAsString();
-    return Csv().decode(content);
+    final bytes = await readFileBytes(file);
+    return Csv().decode(utf8.decode(bytes));
   }
 
   Future<void> _pickFile() async {
@@ -309,13 +309,13 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     final files = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['csv', 'xlsx'],
+      withData: true,
     );
 
     if (files.isEmpty) return;
 
     try {
-      final path = files.first.path!;
-      final parsed = await _parseFile(path, files.first.name);
+      final parsed = await _parseFile(files.first);
 
       setState(() {
         _rows = parsed;
@@ -350,6 +350,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     final files = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['csv', 'xlsx'],
+      withData: true,
     );
 
     if (files.isEmpty) return;
@@ -360,8 +361,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
 
     for (final file in files) {
       try {
-        final path = file.path!;
-        final parsed = await _parseFile(path, file.name);
+        final parsed = await _parseFile(file);
 
         if (parsed.isEmpty) {
           skipped.add('${file.name} (empty file)');
