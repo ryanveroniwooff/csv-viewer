@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:excel/excel.dart' as xlsx;
+import 'package:archive/archive.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -158,20 +160,110 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     _columnWidths = widths;
   }
 
+  /// Reads a raw Excel CellValue down to a plain Dart primitive (String,
+  /// num, or bool) so it slots into the app the same way CSV values do.
+  /// CellValue subtypes across excel package versions have varied in their
+  /// exact field names, so this reads `.value` dynamically and falls back
+  /// to toString() if that shape isn't present.
+  dynamic _extractCellPrimitive(xlsx.CellValue? cellValue) {
+    if (cellValue == null) return '';
+    try {
+      final dynamic raw = (cellValue as dynamic).value;
+      if (raw != null) return raw;
+    } catch (_) {
+      // Subtype didn't expose `.value` the way we expected — fall back below.
+    }
+    return cellValue.toString();
+  }
+
+  /// Some real-world xlsx exporters (notably Go-based ones, e.g. many RMM
+  /// tools) write empty string cells as `<c t="s"></c>` with no `<v>` child
+  /// at all. That's unusual enough that the `excel` package's parser throws
+  /// a bare `StateError('No element')` trying to resolve the missing value.
+  /// This strips the `t="s"` attribute off any such empty, self-closing
+  /// cell tags inside the worksheet XML before we hand the bytes to the
+  /// decoder, turning them into ordinary blank cells instead.
+  Future<Uint8List> _sanitizeXlsxBytes(Uint8List bytes) async {
+    final archive = ZipDecoder().decodeBytes(bytes);
+    final emptyStringCellPattern = RegExp(r'<c([^>]*)></c>');
+
+    final newArchive = Archive();
+    for (final file in archive.files) {
+      if (file.isFile &&
+          file.name.startsWith('xl/worksheets/') &&
+          file.name.endsWith('.xml')) {
+        final content = utf8.decode(file.content as List<int>);
+        final fixed = content.replaceAllMapped(emptyStringCellPattern, (m) {
+          final attrs = m.group(1)!;
+          if (attrs.contains('t="s"')) {
+            final cleaned = attrs.replaceAll(RegExp(r'\s*t="s"'), '');
+            return '<c$cleaned></c>';
+          }
+          return m.group(0)!;
+        });
+        final fixedBytes = utf8.encode(fixed);
+        newArchive.addFile(
+          ArchiveFile(file.name, fixedBytes.length, fixedBytes),
+        );
+      } else {
+        newArchive.addFile(file);
+      }
+    }
+
+    final encoded = ZipEncoder().encode(newArchive);
+    if (encoded == null) {
+      throw Exception('Failed to re-encode sanitized xlsx');
+    }
+    return Uint8List.fromList(encoded);
+  }
+
+  Future<List<List<dynamic>>> _parseXlsx(String path) async {
+    final rawBytes = await File(path).readAsBytes();
+
+    Uint8List bytes;
+    try {
+      bytes = await _sanitizeXlsxBytes(rawBytes);
+    } catch (_) {
+      // If sanitizing fails for any reason, fall back to the raw file
+      // rather than blocking the load entirely.
+      bytes = rawBytes;
+    }
+
+    final workbook = xlsx.Excel.decodeBytes(bytes);
+    if (workbook.tables.isEmpty) return [];
+
+    // Use the first sheet. If your workbooks have multiple sheets you care
+    // about, this is the spot to add a sheet picker later.
+    final sheetName = workbook.tables.keys.first;
+    final sheet = workbook.tables[sheetName]!;
+
+    return sheet.rows
+        .map((row) =>
+            row.map((cell) => _extractCellPrimitive(cell?.value)).toList())
+        .toList();
+  }
+
+  Future<List<List<dynamic>>> _parseFile(String path, String name) async {
+    if (name.toLowerCase().endsWith('.xlsx')) {
+      return _parseXlsx(path);
+    }
+    final content = await File(path).readAsString();
+    return Csv().decode(content);
+  }
+
   Future<void> _pickFile() async {
     setState(() => _error = null);
 
     final files = await FilePicker.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['csv'],
+      allowedExtensions: ['csv', 'xlsx'],
     );
 
     if (files.isEmpty) return; // user cancelled the dialog
 
     try {
       final path = files.first.path!;
-      final content = await File(path).readAsString();
-      final parsed = Csv().decode(content);
+      final parsed = await _parseFile(path, files.first.name);
 
       setState(() {
         _rows = parsed;
@@ -185,6 +277,82 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     } catch (e) {
       setState(() => _error = 'Could not read file: $e');
     }
+  }
+
+  bool _headersMatch(List<dynamic> a, List<dynamic> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].toString().trim().toLowerCase() !=
+          b[i].toString().trim().toLowerCase()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Future<void> _mergeFiles() async {
+    if (_rows == null) return;
+    setState(() => _error = null);
+
+    final files = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['csv', 'xlsx'],
+    );
+
+    if (files.isEmpty) return; // user cancelled the dialog
+
+    final rowsToAdd = <List<dynamic>>[];
+    final skipped = <String>[];
+    var mergedFileCount = 0;
+
+    for (final file in files) {
+      try {
+        final path = file.path!;
+        final parsed = await _parseFile(path, file.name);
+
+        if (parsed.isEmpty) {
+          skipped.add('${file.name} (empty file)');
+          continue;
+        }
+
+        final fileHeaders = parsed.first;
+        if (!_headersMatch(fileHeaders, _headers)) {
+          skipped.add('${file.name} (headers don\'t match)');
+          continue;
+        }
+
+        rowsToAdd.addAll(parsed.skip(1));
+        mergedFileCount++;
+      } catch (e) {
+        skipped.add('${file.name} (error reading file)');
+      }
+    }
+
+    if (rowsToAdd.isNotEmpty) {
+      setState(() {
+        _rows = [_headers, ..._dataRows, ...rowsToAdd];
+        _uniqueValueCache.clear();
+        _computeColumnWidths();
+      });
+    }
+
+    if (!mounted) return;
+
+    final messageParts = <String>[];
+    if (mergedFileCount > 0) {
+      messageParts.add(
+          'Merged ${rowsToAdd.length} rows from $mergedFileCount file${mergedFileCount == 1 ? '' : 's'}');
+    }
+    if (skipped.isNotEmpty) {
+      messageParts.add('Skipped: ${skipped.join(', ')}');
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(messageParts.join('. ')),
+        duration: const Duration(seconds: 5),
+      ),
+    );
   }
 
   List<List<dynamic>> get _filteredRows {
@@ -251,42 +419,89 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     return entries;
   }
 
+  /// What's currently on screen: the grouped summary if Group By is active,
+  /// otherwise headers + the filtered rows. Shared by both export formats.
+  ({List<List<dynamic>> rows, String baseName, int count}) _currentExportData() {
+    if (_groupByColumn != null) {
+      return (
+        rows: [
+          [_groupByColumn, 'Count'],
+          ..._groupedData.map((e) => [e.key, e.value]),
+        ],
+        baseName: 'export_grouped',
+        count: _groupedData.length,
+      );
+    }
+    return (
+      rows: [_headers, ..._filteredRows],
+      baseName: 'export',
+      count: _filteredRows.length,
+    );
+  }
+
+  xlsx.CellValue _toCellValue(dynamic value) {
+    if (value is int) return xlsx.IntCellValue(value);
+    if (value is double) return xlsx.DoubleCellValue(value);
+    if (value is bool) return xlsx.BoolCellValue(value);
+    return xlsx.TextCellValue(value?.toString() ?? '');
+  }
+
   Future<void> _exportCsv() async {
     if (_rows == null) return;
+    final data = _currentExportData();
 
-    // Export exactly what's currently on screen: the grouped summary if
-    // Group By is active, otherwise headers + the filtered rows.
-    final List<List<dynamic>> exportRows;
-    final String defaultName;
-
-    if (_groupByColumn != null) {
-      exportRows = [
-        [_groupByColumn, 'Count'],
-        ..._groupedData.map((e) => [e.key, e.value]),
-      ];
-      defaultName = 'export_grouped.csv';
-    } else {
-      exportRows = [_headers, ..._filteredRows];
-      defaultName = 'export.csv';
-    }
-
-    final csvString = Csv().encode(exportRows);
+    final csvString = Csv().encode(data.rows);
     final bytes = Uint8List.fromList(utf8.encode(csvString));
 
     try {
       final savedPath = await FilePicker.saveFile(
         dialogTitle: 'Export CSV',
-        fileName: defaultName,
+        fileName: '${data.baseName}.csv',
         bytes: bytes,
       );
 
       if (!mounted) return;
 
       if (savedPath != null) {
-        final count =
-            _groupByColumn != null ? _groupedData.length : _filteredRows.length;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Exported $count rows')),
+          SnackBar(content: Text('Exported ${data.count} rows')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Export failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _exportXlsx() async {
+    if (_rows == null) return;
+    final data = _currentExportData();
+
+    try {
+      final workbook = xlsx.Excel.createExcel();
+      final sheet = workbook['Sheet1'];
+      for (final row in data.rows) {
+        sheet.appendRow(row.map(_toCellValue).toList());
+      }
+
+      final encoded = workbook.save();
+      if (encoded == null) {
+        throw Exception('Failed to encode xlsx');
+      }
+
+      final savedPath = await FilePicker.saveFile(
+        dialogTitle: 'Export Excel',
+        fileName: '${data.baseName}.xlsx',
+        bytes: Uint8List.fromList(encoded),
+      );
+
+      if (!mounted) return;
+
+      if (savedPath != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Exported ${data.count} rows')),
         );
       }
     } catch (e) {
@@ -532,7 +747,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
           FilledButton.icon(
             onPressed: _pickFile,
             icon: const Icon(Icons.folder_open),
-            label: const Text('Browse for CSV'),
+            label: const Text('Browse for CSV or Excel'),
           ),
           if (_error != null) ...[
             const SizedBox(height: 16),
@@ -558,6 +773,12 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
                 label: const Text('Browse'),
               ),
               const SizedBox(width: 12),
+              OutlinedButton.icon(
+                onPressed: _mergeFiles,
+                icon: const Icon(Icons.merge_type),
+                label: const Text('Merge'),
+              ),
+              const SizedBox(width: 12),
               Expanded(
                 child: TextField(
                   decoration: const InputDecoration(
@@ -579,10 +800,58 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
                 ),
               ),
               const SizedBox(width: 12),
-              FilledButton.tonalIcon(
-                onPressed: _exportCsv,
-                icon: const Icon(Icons.file_download_outlined),
-                label: const Text('Export'),
+              PopupMenuButton<String>(
+                tooltip: 'Export',
+                onSelected: (value) {
+                  if (value == 'csv') _exportCsv();
+                  if (value == 'xlsx') _exportXlsx();
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                    value: 'csv',
+                    child: Row(
+                      children: [
+                        Icon(Icons.description_outlined, size: 18),
+                        SizedBox(width: 10),
+                        Text('Export as CSV'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'xlsx',
+                    child: Row(
+                      children: [
+                        Icon(Icons.grid_on_outlined, size: 18),
+                        SizedBox(width: 10),
+                        Text('Export as Excel (.xlsx)'),
+                      ],
+                    ),
+                  ),
+                ],
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 11),
+                  decoration: BoxDecoration(
+                    color: colorScheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.file_download_outlined,
+                          size: 18, color: colorScheme.onSecondaryContainer),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Export',
+                        style:
+                            TextStyle(color: colorScheme.onSecondaryContainer),
+                      ),
+                      const SizedBox(width: 2),
+                      Icon(Icons.arrow_drop_down,
+                          size: 18, color: colorScheme.onSecondaryContainer),
+                    ],
+                  ),
+                ),
               ),
               const SizedBox(width: 12),
               SizedBox(
