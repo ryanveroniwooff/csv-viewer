@@ -1,6 +1,6 @@
 import 'dart:typed_data';
-import 'package:file_picker/file_picker.dart';
+import 'package:cross_file/cross_file.dart';
 
-Future<Uint8List> readFileBytes(PlatformFile file) async {
-  return await file.xFile.readAsBytes();
+Future<Uint8List> readFileBytes(XFile file) async {
+  return await file.readAsBytes();
 }

@@ -4,15 +4,18 @@ import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
 import 'package:excel/excel.dart' as xlsx;
 import 'package:archive/archive.dart';
+import 'package:cross_file/cross_file.dart';
 import 'file_bytes_reader.dart';
+import 'startup_file.dart' if (dart.library.io) 'startup_file_io.dart';
 import 'dart:convert';
 
-void main() {
-  runApp(const MyApp());
+void main(List<String> args) {
+  runApp(MyApp(launchArgs: args));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final List<String> launchArgs;
+  const MyApp({super.key, this.launchArgs = const []});
 
   @override
   Widget build(BuildContext context) {
@@ -71,7 +74,7 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const CsvViewerPage(),
+      home: CsvViewerPage(launchArgs: launchArgs),
     );
   }
 }
@@ -106,7 +109,8 @@ class FilterCondition {
 }
 
 class CsvViewerPage extends StatefulWidget {
-  const CsvViewerPage({super.key});
+  final List<String> launchArgs;
+  const CsvViewerPage({super.key, this.launchArgs = const []});
 
   @override
   State<CsvViewerPage> createState() => _CsvViewerPageState();
@@ -137,6 +141,12 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
         _commitEdit();
       }
     });
+
+    final startupFile = xFileFromArgs(widget.launchArgs);
+    if (startupFile != null) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _loadFile(startupFile));
+    }
   }
 
   @override
@@ -273,7 +283,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     return Uint8List.fromList(encoded);
   }
 
-  Future<List<List<dynamic>>> _parseXlsx(PlatformFile file) async {
+  Future<List<List<dynamic>>> _parseXlsx(XFile file) async {
     final rawBytes = await readFileBytes(file);
 
     Uint8List bytes;
@@ -295,7 +305,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
         .toList();
   }
 
-  Future<List<List<dynamic>>> _parseFile(PlatformFile file) async {
+  Future<List<List<dynamic>>> _parseFile(XFile file) async {
     if (file.name.toLowerCase().endsWith('.xlsx')) {
       return _parseXlsx(file);
     }
@@ -304,22 +314,25 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
   }
 
   Future<void> _pickFile() async {
-    setState(() => _error = null);
-
     final files = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['csv', 'xlsx'],
-      withData: true,
     );
 
     if (files.isEmpty) return;
 
+    await _loadFile(files.first.xFile);
+  }
+
+  Future<void> _loadFile(XFile file) async {
+    setState(() => _error = null);
+
     try {
-      final parsed = await _parseFile(files.first);
+      final parsed = await _parseFile(file);
 
       setState(() {
         _rows = parsed;
-        _fileName = files.first.name;
+        _fileName = file.name;
         _searchQuery = '';
         _filters.clear();
         _groupByColumn = null;
@@ -350,7 +363,6 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     final files = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['csv', 'xlsx'],
-      withData: true,
     );
 
     if (files.isEmpty) return;
@@ -361,7 +373,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
 
     for (final file in files) {
       try {
-        final parsed = await _parseFile(file);
+        final parsed = await _parseFile(file.xFile);
 
         if (parsed.isEmpty) {
           skipped.add('${file.name} (empty file)');
