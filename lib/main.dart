@@ -133,6 +133,8 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
   final TextEditingController _editController = TextEditingController();
   final FocusNode _editFocusNode = FocusNode();
 
+  static const double _rowNumberWidth = 48.0;
+
   @override
   void initState() {
     super.initState();
@@ -1039,7 +1041,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
       _computeColumnWidths();
     }
     final visible = _visibleColumnIndices;
-    final totalWidth =
+    final totalWidth = _rowNumberWidth +
         visible.fold<double>(0, (a, c) => a + _widthForColumn(c));
 
     return Card(
@@ -1063,61 +1065,74 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
                           ? Colors.transparent
                           : colorScheme.surfaceContainerLow,
                       child: Row(
-                        children: visible.map((c) {
-                          final width = _widthForColumn(c);
-                          final isEditing =
-                              identical(row, _editingRow) && _editingCol == c;
+                        children: [
+                          Container(
+                            width: _rowNumberWidth,
+                            alignment: Alignment.center,
+                            child: Text(
+                              '${i + 1}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          ...visible.map((c) {
+                            final width = _widthForColumn(c);
+                            final isEditing = identical(row, _editingRow) &&
+                                _editingCol == c;
 
-                          if (isEditing) {
-                            return SizedBox(
-                              width: width,
-                              child: Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 4),
-                                child: Focus(
-                                  onKeyEvent: (node, event) {
-                                    if (event is KeyDownEvent &&
-                                        event.logicalKey ==
-                                            LogicalKeyboardKey.escape) {
-                                      _cancelEdit();
-                                      return KeyEventResult.handled;
-                                    }
-                                    return KeyEventResult.ignored;
-                                  },
-                                  child: TextField(
-                                    controller: _editController,
-                                    focusNode: _editFocusNode,
-                                    autofocus: true,
-                                    style: const TextStyle(fontSize: 14),
-                                    decoration: const InputDecoration(
-                                      isDense: true,
-                                      contentPadding: EdgeInsets.symmetric(
-                                          horizontal: 8, vertical: 8),
-                                      border: OutlineInputBorder(),
+                            if (isEditing) {
+                              return SizedBox(
+                                width: width,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 4),
+                                  child: Focus(
+                                    onKeyEvent: (node, event) {
+                                      if (event is KeyDownEvent &&
+                                          event.logicalKey ==
+                                              LogicalKeyboardKey.escape) {
+                                        _cancelEdit();
+                                        return KeyEventResult.handled;
+                                      }
+                                      return KeyEventResult.ignored;
+                                    },
+                                    child: TextField(
+                                      controller: _editController,
+                                      focusNode: _editFocusNode,
+                                      autofocus: true,
+                                      style: const TextStyle(fontSize: 14),
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(
+                                            horizontal: 8, vertical: 8),
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      onSubmitted: (_) => _commitEdit(),
                                     ),
-                                    onSubmitted: (_) => _commitEdit(),
                                   ),
+                                ),
+                              );
+                            }
+
+                            return GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => _startEdit(row, c),
+                              child: Container(
+                                width: width,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 16),
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  c < row.length ? row[c].toString() : '',
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
                                 ),
                               ),
                             );
-                          }
-
-                          return GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () => _startEdit(row, c),
-                            child: Container(
-                              width: width,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16),
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                c < row.length ? row[c].toString() : '',
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                              ),
-                            ),
-                          );
-                        }).toList(),
+                          }),
+                        ],
                       ),
                     );
                   },
@@ -1214,42 +1229,55 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
       height: 48,
       color: colorScheme.surfaceContainerHigh,
       child: Row(
-        children: _visibleColumnIndices.map((c) {
-          final width = _widthForColumn(c);
-          final header = _headers[c].toString();
-          return Container(
-            width: width,
-            padding: const EdgeInsets.only(left: 16, right: 8),
-            alignment: Alignment.centerLeft,
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    header,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
+        children: [
+          Container(
+            width: _rowNumberWidth,
+            alignment: Alignment.center,
+            child: Text(
+              '#',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          ..._visibleColumnIndices.map((c) {
+            final width = _widthForColumn(c);
+            final header = _headers[c].toString();
+            return Container(
+              width: width,
+              padding: const EdgeInsets.only(left: 16, right: 8),
+              alignment: Alignment.centerLeft,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      header,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
                   ),
-                ),
-                Tooltip(
-                  message: 'Hide column',
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(4),
-                    onTap: () => _hideColumn(header),
-                    child: Padding(
-                      padding: const EdgeInsets.all(3.0),
-                      child: Icon(
-                        Icons.visibility_off_outlined,
-                        size: 15,
-                        color: colorScheme.onSurfaceVariant,
+                  Tooltip(
+                    message: 'Hide column',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: () => _hideColumn(header),
+                      child: Padding(
+                        padding: const EdgeInsets.all(3.0),
+                        child: Icon(
+                          Icons.visibility_off_outlined,
+                          size: 15,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
-            ),
-          );
-        }).toList(),
+                ],
+              ),
+            );
+          }),
+        ],
       ),
     );
   }
