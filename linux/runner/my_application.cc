@@ -5,6 +5,8 @@
 #include <gdk/gdkx.h>
 #endif
 
+#include <filesystem>
+
 #include "flutter/generated_plugin_registrant.h"
 
 struct _MyApplication {
@@ -24,6 +26,17 @@ static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
+
+  g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", TRUE, NULL);
+
+  // Set the window icon from the bundled Flutter asset. Resolved relative
+  // to the running executable so this works both for `flutter run -d linux`
+  // and a full `flutter build linux --release` bundle.
+  std::filesystem::path exe_path = std::filesystem::canonical(
+      std::filesystem::read_symlink("/proc/self/exe"));
+  std::filesystem::path icon_path = exe_path.parent_path() / "data" /
+      "flutter_assets" / "assets" / "icon" / "rowmaster_icon.png";
+  gtk_window_set_icon_from_file(GTK_WINDOW(window), icon_path.c_str(), nullptr);
 
   // Use a header bar when running in GNOME as this is the common style used
   // by applications and is the setup most users will be using (e.g. Ubuntu

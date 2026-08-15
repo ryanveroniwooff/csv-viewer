@@ -49,6 +49,18 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+# flutter_launcher_icons config — must be top-level, not nested under
+# dependencies or dev_dependencies.
+flutter_launcher_icons:
+  image_path: "assets/icon/rowmaster_icon.png"
+  windows:
+    generate: true
+  macos:
+    generate: true
+  linux:
+    generate: true
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -60,6 +72,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/icon/rowmaster_icon.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
