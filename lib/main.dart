@@ -122,6 +122,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
   final List<FilterCondition> _filters = [];
   final Map<String, List<String>> _uniqueValueCache = {};
   List<double> _columnWidths = [];
+  final Set<String> _hiddenColumns = {};
 
   // Cell editing: only one cell can be edited at a time, so a single
   // reused controller/focus node is cheaper than one per cell.
@@ -150,6 +151,21 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
   List<dynamic> get _headers => _rows != null ? _rows!.first : [];
   List<List<dynamic>> get _dataRows =>
       _rows != null ? _rows!.skip(1).toList() : [];
+
+  // Indices of columns not currently hidden. Hiding only affects what's
+  // shown in the table and what gets exported — search, filters, and
+  // group-by still operate on the full underlying data.
+  List<int> get _visibleColumnIndices => List.generate(_headers.length, (i) => i)
+      .where((i) => !_hiddenColumns.contains(_headers[i].toString()))
+      .toList();
+
+  void _hideColumn(String column) {
+    setState(() => _hiddenColumns.add(column));
+  }
+
+  void _showColumn(String column) {
+    setState(() => _hiddenColumns.remove(column));
+  }
 
   void _startEdit(List<dynamic> row, int col) {
     setState(() {
@@ -332,6 +348,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
         _searchQuery = '';
         _filters.clear();
         _groupByColumn = null;
+        _hiddenColumns.clear();
         _uniqueValueCache.clear();
         _computeColumnWidths();
       });
@@ -481,7 +498,8 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
   }
 
   /// What's currently on screen: the grouped summary if Group By is active,
-  /// otherwise headers + the filtered rows. Shared by both export formats.
+  /// otherwise headers + the filtered rows (hidden columns excluded).
+  /// Shared by both export formats.
   ({List<List<dynamic>> rows, String baseName, int count}) _currentExportData() {
     if (_groupByColumn != null) {
       return (
@@ -493,10 +511,15 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
         count: _groupedData.length,
       );
     }
+    final visible = _visibleColumnIndices;
+    final visibleHeaders = visible.map((i) => _headers[i]).toList();
+    final visibleFilteredRows = _filteredRows
+        .map((row) => visible.map((i) => i < row.length ? row[i] : '').toList())
+        .toList();
     return (
-      rows: [_headers, ..._filteredRows],
+      rows: [visibleHeaders, ...visibleFilteredRows],
       baseName: 'export',
-      count: _filteredRows.length,
+      count: visibleFilteredRows.length,
     );
   }
 
@@ -960,6 +983,32 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
                   .toList(),
             ),
           ],
+          if (_hiddenColumns.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    'Hidden:',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: colorScheme.onSurfaceVariant),
+                  ),
+                ),
+                ..._hiddenColumns.map(
+                  (col) => ActionChip(
+                    avatar: const Icon(Icons.visibility_outlined, size: 16),
+                    label: Text(col),
+                    onPressed: () => _showColumn(col),
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (_error != null) ...[
             const SizedBox(height: 12),
             Text(_error!, style: TextStyle(color: colorScheme.error)),
@@ -990,7 +1039,9 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     if (_columnWidths.length != _headers.length) {
       _computeColumnWidths();
     }
-    final totalWidth = _columnWidths.fold<double>(0, (a, b) => a + b);
+    final visible = _visibleColumnIndices;
+    final totalWidth =
+        visible.fold<double>(0, (a, c) => a + _widthForColumn(c));
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -1015,10 +1066,8 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
                           ? Colors.transparent
                           : colorScheme.surfaceContainerLow,
                       child: Row(
-                        children: List.generate(row.length, (c) {
-                          final width = c < _columnWidths.length
-                              ? _columnWidths[c]
-                              : 140.0;
+                        children: visible.map((c) {
+                          final width = _widthForColumn(c);
                           final isEditing =
                               identical(row, _editingRow) && _editingCol == c;
 
@@ -1065,13 +1114,13 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
                                   horizontal: 16),
                               alignment: Alignment.centerLeft,
                               child: Text(
-                                row[c].toString(),
+                                c < row.length ? row[c].toString() : '',
                                 overflow: TextOverflow.ellipsis,
                                 maxLines: 1,
                               ),
                             ),
                           );
-                        }),
+                        }).toList(),
                       ),
                     );
                   },
@@ -1083,6 +1132,9 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
       ),
     );
   }
+
+  double _widthForColumn(int c) =>
+      c < _columnWidths.length ? _columnWidths[c] : 140.0;
 
   Widget _buildGroupTable(ColorScheme colorScheme) {
     final data = _groupedData;
@@ -1165,20 +1217,42 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
       height: 48,
       color: colorScheme.surfaceContainerHigh,
       child: Row(
-        children: List.generate(_headers.length, (c) {
-          final width = c < _columnWidths.length ? _columnWidths[c] : 140.0;
+        children: _visibleColumnIndices.map((c) {
+          final width = _widthForColumn(c);
+          final header = _headers[c].toString();
           return Container(
             width: width,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.only(left: 16, right: 8),
             alignment: Alignment.centerLeft,
-            child: Text(
-              _headers[c].toString(),
-              style: const TextStyle(fontWeight: FontWeight.w600),
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    header,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ),
+                Tooltip(
+                  message: 'Hide column',
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(4),
+                    onTap: () => _hideColumn(header),
+                    child: Padding(
+                      padding: const EdgeInsets.all(3.0),
+                      child: Icon(
+                        Icons.visibility_off_outlined,
+                        size: 15,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           );
-        }),
+        }).toList(),
       ),
     );
   }
