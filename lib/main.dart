@@ -78,7 +78,7 @@ class MyApp extends StatelessWidget {
 
 class FilterCondition {
   String column;
-  String operatorType; // 'contains', 'equals', 'not_equals', '>', '<'
+  String operatorType;
   String value;
 
   FilterCondition({
@@ -113,7 +113,7 @@ class CsvViewerPage extends StatefulWidget {
 }
 
 class _CsvViewerPageState extends State<CsvViewerPage> {
-  List<List<dynamic>>? _rows; // first row is the header
+  List<List<dynamic>>? _rows;
   String? _fileName;
   String? _error;
 
@@ -124,8 +124,6 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
   List<double> _columnWidths = [];
   final Set<String> _hiddenColumns = {};
 
-  // Cell editing: only one cell can be edited at a time, so a single
-  // reused controller/focus node is cheaper than one per cell.
   List<dynamic>? _editingRow;
   int? _editingCol;
   final TextEditingController _editController = TextEditingController();
@@ -152,9 +150,6 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
   List<List<dynamic>> get _dataRows =>
       _rows != null ? _rows!.skip(1).toList() : [];
 
-  // Indices of columns not currently hidden. Hiding only affects what's
-  // shown in the table and what gets exported — search, filters, and
-  // group-by still operate on the full underlying data.
   List<int> get _visibleColumnIndices => List.generate(_headers.length, (i) => i)
       .where((i) => !_hiddenColumns.contains(_headers[i].toString()))
       .toList();
@@ -190,8 +185,6 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
       row[col] = _editController.text;
       _editingRow = null;
       _editingCol = null;
-      // The edited value could be a value another cell's suggestions
-      // depend on, so drop the cache rather than serve stale options.
       _uniqueValueCache.clear();
     });
   }
@@ -222,7 +215,6 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
 
   void _computeColumnWidths() {
     final widths = <double>[];
-    // Sample only the first 200 rows so this stays fast on large files.
     final sample = _dataRows.take(200);
     for (var c = 0; c < _headers.length; c++) {
       var maxLen = _headers[c].toString().length.toDouble();
@@ -237,29 +229,16 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     _columnWidths = widths;
   }
 
-  /// Reads a raw Excel CellValue down to a plain Dart primitive (String,
-  /// num, or bool) so it slots into the app the same way CSV values do.
-  /// CellValue subtypes across excel package versions have varied in their
-  /// exact field names, so this reads `.value` dynamically and falls back
-  /// to toString() if that shape isn't present.
   dynamic _extractCellPrimitive(xlsx.CellValue? cellValue) {
     if (cellValue == null) return '';
     try {
       final dynamic raw = (cellValue as dynamic).value;
       if (raw != null) return raw;
     } catch (_) {
-      // Subtype didn't expose `.value` the way we expected — fall back below.
     }
     return cellValue.toString();
   }
 
-  /// Some real-world xlsx exporters (notably Go-based ones, e.g. many RMM
-  /// tools) write empty string cells as `<c t="s"></c>` with no `<v>` child
-  /// at all. That's unusual enough that the `excel` package's parser throws
-  /// a bare `StateError('No element')` trying to resolve the missing value.
-  /// This strips the `t="s"` attribute off any such empty, self-closing
-  /// cell tags inside the worksheet XML before we hand the bytes to the
-  /// decoder, turning them into ordinary blank cells instead.
   Future<Uint8List> _sanitizeXlsxBytes(Uint8List bytes) async {
     final archive = ZipDecoder().decodeBytes(bytes);
     final emptyStringCellPattern = RegExp(r'<c([^>]*)></c>');
@@ -301,16 +280,12 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
     try {
       bytes = await _sanitizeXlsxBytes(rawBytes);
     } catch (_) {
-      // If sanitizing fails for any reason, fall back to the raw file
-      // rather than blocking the load entirely.
       bytes = rawBytes;
     }
 
     final workbook = xlsx.Excel.decodeBytes(bytes);
     if (workbook.tables.isEmpty) return [];
 
-    // Use the first sheet. If your workbooks have multiple sheets you care
-    // about, this is the spot to add a sheet picker later.
     final sheetName = workbook.tables.keys.first;
     final sheet = workbook.tables[sheetName]!;
 
@@ -336,7 +311,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
       allowedExtensions: ['csv', 'xlsx'],
     );
 
-    if (files.isEmpty) return; // user cancelled the dialog
+    if (files.isEmpty) return;
 
     try {
       final path = files.first.path!;
@@ -377,7 +352,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
       allowedExtensions: ['csv', 'xlsx'],
     );
 
-    if (files.isEmpty) return; // user cancelled the dialog
+    if (files.isEmpty) return;
 
     final rowsToAdd = <List<dynamic>>[];
     final skipped = <String>[];
@@ -490,16 +465,13 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
 
     final entries = counts.entries.toList()
       ..sort((a, b) {
-        final byCount = b.value.compareTo(a.value); // highest count first
+        final byCount = b.value.compareTo(a.value);
         if (byCount != 0) return byCount;
-        return a.key.compareTo(b.key); // tie-break alphabetically
+        return a.key.compareTo(b.key);
       });
     return entries;
   }
 
-  /// What's currently on screen: the grouped summary if Group By is active,
-  /// otherwise headers + the filtered rows (hidden columns excluded).
-  /// Shared by both export formats.
   ({List<List<dynamic>> rows, String baseName, int count}) _currentExportData() {
     if (_groupByColumn != null) {
       return (
@@ -849,124 +821,139 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              FilledButton.tonalIcon(
-                onPressed: _pickFile,
-                icon: const Icon(Icons.folder_open),
-                label: const Text('Browse'),
-              ),
-              const SizedBox(width: 12),
-              OutlinedButton.icon(
-                onPressed: _mergeFiles,
-                icon: const Icon(Icons.merge_type),
-                label: const Text('Merge'),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.search),
-                    hintText: 'Search all fields...',
-                    isDense: true,
+          SizedBox(
+            height: 48,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                FilledButton.tonalIcon(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 48),
                   ),
-                  onChanged: (v) => setState(() => _searchQuery = v),
+                  onPressed: _pickFile,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('Browse'),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Badge(
-                label: Text('${_filters.length}'),
-                isLabelVisible: _filters.isNotEmpty,
-                child: OutlinedButton.icon(
-                  onPressed: _openFilterDialog,
-                  icon: const Icon(Icons.filter_list),
-                  label: const Text('Filters'),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 48),
+                  ),
+                  onPressed: _mergeFiles,
+                  icon: const Icon(Icons.merge_type),
+                  label: const Text('Merge'),
                 ),
-              ),
-              const SizedBox(width: 12),
-              PopupMenuButton<String>(
-                tooltip: 'Export',
-                onSelected: (value) {
-                  if (value == 'csv') _exportCsv();
-                  if (value == 'xlsx') _exportXlsx();
-                },
-                itemBuilder: (context) => const [
-                  PopupMenuItem(
-                    value: 'csv',
-                    child: Row(
-                      children: [
-                        Icon(Icons.description_outlined, size: 18),
-                        SizedBox(width: 10),
-                        Text('Export as CSV'),
-                      ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      hintText: 'Search all fields...',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(vertical: 14),
                     ),
+                    onChanged: (v) => setState(() => _searchQuery = v),
                   ),
-                  PopupMenuItem(
-                    value: 'xlsx',
-                    child: Row(
-                      children: [
-                        Icon(Icons.grid_on_outlined, size: 18),
-                        SizedBox(width: 10),
-                        Text('Export as Excel (.xlsx)'),
-                      ],
+                ),
+                const SizedBox(width: 12),
+                Badge(
+                  label: Text('${_filters.length}'),
+                  isLabelVisible: _filters.isNotEmpty,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 48),
                     ),
+                    onPressed: _openFilterDialog,
+                    icon: const Icon(Icons.filter_list),
+                    label: const Text('Filters'),
                   ),
-                ],
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 11),
-                  decoration: BoxDecoration(
-                    color: colorScheme.secondaryContainer,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.file_download_outlined,
-                          size: 18, color: colorScheme.onSecondaryContainer),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Export',
-                        style:
-                            TextStyle(color: colorScheme.onSecondaryContainer),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 190,
+                  child: DropdownButtonFormField<String?>(
+                    initialValue: _groupByColumn,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.workspaces_outlined),
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    hint: const Text('Group by'),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('None'),
                       ),
-                      const SizedBox(width: 2),
-                      Icon(Icons.arrow_drop_down,
-                          size: 18, color: colorScheme.onSecondaryContainer),
+                      ..._headers.map(
+                        (h) => DropdownMenuItem<String?>(
+                          value: h.toString(),
+                          child: Text(
+                            h.toString(),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
                     ],
+                    onChanged: (v) => setState(() => _groupByColumn = v),
                   ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              SizedBox(
-                width: 190,
-                child: DropdownButtonFormField<String?>(
-                  initialValue: _groupByColumn,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.workspaces_outlined),
-                    isDense: true,
-                  ),
-                  hint: const Text('Group by'),
-                  items: [
-                    const DropdownMenuItem<String?>(
-                      value: null,
-                      child: Text('None'),
+                const SizedBox(width: 12),
+                PopupMenuButton<String>(
+                  tooltip: 'Export',
+                  onSelected: (value) {
+                    if (value == 'csv') _exportCsv();
+                    if (value == 'xlsx') _exportXlsx();
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      value: 'csv',
+                      child: Row(
+                        children: [
+                          Icon(Icons.description_outlined, size: 18),
+                          SizedBox(width: 10),
+                          Text('Export as CSV'),
+                        ],
+                      ),
                     ),
-                    ..._headers.map(
-                      (h) => DropdownMenuItem<String?>(
-                        value: h.toString(),
-                        child: Text(
-                          h.toString(),
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                    PopupMenuItem(
+                      value: 'xlsx',
+                      child: Row(
+                        children: [
+                          Icon(Icons.grid_on_outlined, size: 18),
+                          SizedBox(width: 10),
+                          Text('Export as Excel (.xlsx)'),
+                        ],
                       ),
                     ),
                   ],
-                  onChanged: (v) => setState(() => _groupByColumn = v),
+                  child: Container(
+                    height: 48,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: colorScheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.file_download_outlined,
+                            size: 18, color: colorScheme.onSecondaryContainer),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Export',
+                          style: TextStyle(
+                              color: colorScheme.onSecondaryContainer),
+                        ),
+                        const SizedBox(width: 2),
+                        Icon(Icons.arrow_drop_down,
+                            size: 18, color: colorScheme.onSecondaryContainer),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           if (_filters.isNotEmpty) ...[
             const SizedBox(height: 12),
@@ -1055,8 +1042,6 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
               Divider(height: 1, thickness: 1, color: colorScheme.outline),
               Expanded(
                 child: ListView.builder(
-                  // Fixed extent lets Flutter skip per-item layout math —
-                  // this is what actually makes scrolling smooth on big files.
                   itemExtent: 44,
                   itemCount: rows.length,
                   itemBuilder: (context, i) {
