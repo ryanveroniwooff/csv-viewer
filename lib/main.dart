@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
 import 'package:excel/excel.dart' as xlsx;
 import 'package:archive/archive.dart';
 import 'dart:io';
 import 'dart:convert';
-import 'dart:typed_data';
 
 void main() {
   runApp(const MyApp());
@@ -36,7 +36,7 @@ class MyApp extends StatelessWidget {
     );
 
     return MaterialApp(
-      title: 'CSV Viewer',
+      title: 'RowMaster',
       themeMode: ThemeMode.dark,
       darkTheme: ThemeData(
         useMaterial3: true,
@@ -123,9 +123,70 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
   final Map<String, List<String>> _uniqueValueCache = {};
   List<double> _columnWidths = [];
 
+  // Cell editing: only one cell can be edited at a time, so a single
+  // reused controller/focus node is cheaper than one per cell.
+  List<dynamic>? _editingRow;
+  int? _editingCol;
+  final TextEditingController _editController = TextEditingController();
+  final FocusNode _editFocusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _editFocusNode.addListener(() {
+      if (!_editFocusNode.hasFocus && _editingRow != null) {
+        _commitEdit();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _editController.dispose();
+    _editFocusNode.dispose();
+    super.dispose();
+  }
+
   List<dynamic> get _headers => _rows != null ? _rows!.first : [];
   List<List<dynamic>> get _dataRows =>
       _rows != null ? _rows!.skip(1).toList() : [];
+
+  void _startEdit(List<dynamic> row, int col) {
+    setState(() {
+      _editingRow = row;
+      _editingCol = col;
+      _editController.text = row[col].toString();
+      _editController.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _editController.text.length,
+      );
+    });
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _editFocusNode.requestFocus());
+  }
+
+  void _commitEdit() {
+    final row = _editingRow;
+    final col = _editingCol;
+    if (row == null || col == null) return;
+
+    setState(() {
+      row[col] = _editController.text;
+      _editingRow = null;
+      _editingCol = null;
+      // The edited value could be a value another cell's suggestions
+      // depend on, so drop the cache rather than serve stale options.
+      _uniqueValueCache.clear();
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editingRow = null;
+      _editingCol = null;
+    });
+    _editFocusNode.unfocus();
+  }
 
   List<String> _uniqueValuesForColumn(String column) {
     if (_uniqueValueCache.containsKey(column)) {
@@ -720,7 +781,7 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
           children: [
             Icon(Icons.table_chart_outlined, color: colorScheme.primary),
             const SizedBox(width: 10),
-            Text(_fileName ?? 'CSV Viewer'),
+            Text(_fileName ?? 'RowMaster'),
           ],
         ),
       ),
@@ -958,15 +1019,56 @@ class _CsvViewerPageState extends State<CsvViewerPage> {
                           final width = c < _columnWidths.length
                               ? _columnWidths[c]
                               : 140.0;
-                          return Container(
-                            width: width,
-                            padding:
-                                const EdgeInsets.symmetric(horizontal: 16),
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              row[c].toString(),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
+                          final isEditing =
+                              identical(row, _editingRow) && _editingCol == c;
+
+                          if (isEditing) {
+                            return SizedBox(
+                              width: width,
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 4),
+                                child: Focus(
+                                  onKeyEvent: (node, event) {
+                                    if (event is KeyDownEvent &&
+                                        event.logicalKey ==
+                                            LogicalKeyboardKey.escape) {
+                                      _cancelEdit();
+                                      return KeyEventResult.handled;
+                                    }
+                                    return KeyEventResult.ignored;
+                                  },
+                                  child: TextField(
+                                    controller: _editController,
+                                    focusNode: _editFocusNode,
+                                    autofocus: true,
+                                    style: const TextStyle(fontSize: 14),
+                                    decoration: const InputDecoration(
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 8),
+                                      border: OutlineInputBorder(),
+                                    ),
+                                    onSubmitted: (_) => _commitEdit(),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+
+                          return GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => _startEdit(row, c),
+                            child: Container(
+                              width: width,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16),
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                row[c].toString(),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                              ),
                             ),
                           );
                         }),
